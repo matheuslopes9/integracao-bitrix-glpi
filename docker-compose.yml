@@ -1,0 +1,22 @@
+version: "3.8"
+
+services:
+  integrador:
+    build: .
+    image: integrador-bitrix-glpi:latest
+    container_name: integrador-bitrix-glpi
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    volumes:
+      - integrador-data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  integrador-data:
