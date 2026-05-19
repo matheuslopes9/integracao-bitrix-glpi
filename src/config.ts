@@ -17,7 +17,15 @@ const envSchema = z.object({
   BITRIX_WEBHOOK_SECRET: z.string().min(8),
   BITRIX_DEFAULT_CREATOR_ID: z.coerce.number().int().positive(),
   BITRIX_DEFAULT_RESPONSIBLE_ID: z.coerce.number().int().positive(),
-  BITRIX_DEFAULT_GROUP_ID: z.coerce.number().int().nonnegative().optional()
+  BITRIX_DEFAULT_GROUP_ID: z.coerce.number().int().nonnegative().optional(),
+
+  // Modo simulação: quando ligado, recebe webhooks e processa tudo, MAS não cria/altera
+  // nada no Bitrix nem no GLPI - só loga "criaria X com fields Y". Útil para validar em produção
+  // sem efeitos colaterais. Ligue temporariamente em DRY_RUN=true e desligue após validar.
+  DRY_RUN: z
+    .union([z.literal('true'), z.literal('false'), z.literal('1'), z.literal('0')])
+    .optional()
+    .transform((v) => v === 'true' || v === '1')
 });
 
 const parsed = envSchema.safeParse(process.env);
