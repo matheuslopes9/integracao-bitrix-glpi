@@ -157,9 +157,30 @@ export async function handleBitrixTaskAdded(taskId: number): Promise<void> {
     `🔗 Bitrix: https://uctech.bitrix24.com.br/company/personal/user/${task.createdBy ?? config.BITRIX_DEFAULT_CREATOR_ID}/tasks/task/view/${taskId}/`
   ].join('\n');
 
-  const requesterGlpiUserId = task.createdBy
-    ? userRepo.bitrixToGlpi(Number(task.createdBy))
-    : undefined;
+  // Resolve o atendente: tenta mapeamento estatico no SQLite primeiro; senao busca por email
+  let requesterGlpiUserId: number | undefined;
+  if (task.createdBy) {
+    const bitrixUserId = Number(task.createdBy);
+    requesterGlpiUserId = userRepo.bitrixToGlpi(bitrixUserId);
+    if (!requesterGlpiUserId) {
+      try {
+        const email = await bitrixClient.getUserEmail(bitrixUserId);
+        if (email) {
+          const glpiUser = await glpiClient.findUserByEmail(email);
+          if (glpiUser) {
+            requesterGlpiUserId = glpiUser.id;
+            // Aprende para próximas vezes
+            userRepo.upsert(glpiUser.id, bitrixUserId, email, 'auto-link via email');
+            logger.info(`🔗 Mapeamento aprendido: Bitrix #${bitrixUserId} (${email}) <-> GLPI #${glpiUser.id}`);
+          } else {
+            logger.warn(`⚠️  Email "${email}" do user Bitrix #${bitrixUserId} nao achou correspondente no GLPI`);
+          }
+        }
+      } catch (e) {
+        logger.warn(`⚠️  Falha buscando user GLPI por email: ${(e as Error).message}`);
+      }
+    }
+  }
 
   const ticketId = await glpiClient.createTicket({
     name: title,

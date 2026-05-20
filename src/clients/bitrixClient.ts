@@ -135,7 +135,20 @@ export class BitrixClient {
   }
 
   async getUser(id: number) {
-    return this.call('user.get', { ID: id });
+    return this.call<unknown[]>('user.get', { ID: id });
+  }
+
+  /**
+   * Lê um usuário do Bitrix por ID e retorna o e-mail principal (vazio se não tiver).
+   * Usa user.get que retorna um array — pegamos o primeiro.
+   */
+  async getUserEmail(id: number): Promise<string> {
+    const result = await this.call<Array<{ ID?: string; EMAIL?: string; UF_USER_PHONE_MAIL?: string }>>(
+      'user.get',
+      { ID: id }
+    );
+    const u = Array.isArray(result) ? result[0] : (result as unknown as { EMAIL?: string });
+    return String((u as { EMAIL?: string })?.EMAIL ?? '').trim().toLowerCase();
   }
 
   async findUserByEmail(email: string) {

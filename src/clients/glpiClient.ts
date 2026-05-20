@@ -107,6 +107,71 @@ export class GlpiClient {
   }
 
   /**
+   * Procura um usuário do GLPI pelo e-mail (case-insensitive).
+   *
+   * O GLPI tem duas formas de armazenar email:
+   *   - tabela glpi_useremails (1 user pode ter N emails) → endpoint /UserEmail
+   *   - campo name = login (que muitas instalações usam = email)
+   *
+   * Estratégia: primeiro tenta search via UserEmail; se não acha,
+   * tenta achar User onde name = email.
+   */
+  async findUserByEmail(email: string): Promise<{ id: number; name: string } | null> {
+    const target = email.trim().toLowerCase();
+    if (!target) return null;
+    return this.request(async (headers) => {
+      // 1) search por UserEmail
+      try {
+        const res = await this.http.get('/search/UserEmail', {
+          headers,
+          params: {
+            'criteria[0][field]': 2, // email
+            'criteria[0][searchtype]': 'equals',
+            'criteria[0][value]': target,
+            'range': '0-4',
+            'forcedisplay[0]': 3 // users_id
+          }
+        });
+        const rows = (res.data?.data ?? []) as Array<Record<string, unknown>>;
+        if (rows.length > 0) {
+          const userId = Number(rows[0]['3'] ?? rows[0].users_id);
+          if (Number.isFinite(userId) && userId > 0) {
+            const user = await this.http.get<GlpiUser>(`/User/${userId}`, { headers });
+            return { id: userId, name: user.data.name ?? '' };
+          }
+        }
+      } catch {
+        /* ignora — tenta fallback */
+      }
+
+      // 2) fallback: User.name == email (instalações onde login é email)
+      try {
+        const res = await this.http.get('/search/User', {
+          headers,
+          params: {
+            'criteria[0][field]': 1, // name
+            'criteria[0][searchtype]': 'equals',
+            'criteria[0][value]': target,
+            'range': '0-4',
+            'forcedisplay[0]': 2
+          }
+        });
+        const rows = (res.data?.data ?? []) as Array<Record<string, unknown>>;
+        if (rows.length > 0) {
+          const userId = Number(rows[0]['2'] ?? rows[0].id);
+          if (Number.isFinite(userId) && userId > 0) {
+            return { id: userId, name: target };
+          }
+        }
+      } catch {
+        /* nada achado */
+      }
+
+      return null;
+    });
+  }
+
+  /**
    * Lê um Group do GLPI. O campo `code` é onde armazenamos o CNPJ do cliente.
    */
   async getGroup(id: number): Promise<{ id: number; name: string; code?: string }> {
