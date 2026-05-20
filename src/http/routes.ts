@@ -9,8 +9,10 @@ import {
   CnpjMatchError
 } from '../sync/glpiToBitrix';
 import {
+  handleBitrixTaskAdded,
   handleBitrixTaskUpdated,
-  handleBitrixTaskCommentAdded
+  handleBitrixTaskCommentAdded,
+  BitrixCnpjMatchError
 } from '../sync/bitrixToGlpi';
 import { verifyGlpiSignature, verifyBitrixSecret } from './verifySignature';
 import { parseGlpiPayload } from './glpiPayloadParser';
@@ -119,7 +121,13 @@ router.post('/webhooks/bitrix', verifyBitrixSecret, async (req: Request, res: Re
   logger.info(`📥 Bitrix -> ${event}`);
 
   try {
-    if (event === 'ONTASKUPDATE' || event === 'ONTASKADD') {
+    if (event === 'ONTASKADD') {
+      const taskId = Number(
+        body.data?.FIELDS_AFTER?.ID ??
+          (body.data as { FIELDS?: { ID?: unknown } } | undefined)?.FIELDS?.ID
+      );
+      if (Number.isFinite(taskId)) await handleBitrixTaskAdded(taskId);
+    } else if (event === 'ONTASKUPDATE') {
       const taskId = Number(
         body.data?.FIELDS_AFTER?.ID ??
           (body.data as { FIELDS?: { ID?: unknown } } | undefined)?.FIELDS?.ID
@@ -138,6 +146,12 @@ router.post('/webhooks/bitrix', verifyBitrixSecret, async (req: Request, res: Re
     res.json({ ok: true });
   } catch (err) {
     const msg = (err as Error).message;
+    if (err instanceof BitrixCnpjMatchError) {
+      logger.warn(`⛔ ${msg}`);
+      auditLog.record('bitrix', event, body, 'error', `${err.code}: ${msg}`);
+      res.status(422).json({ ok: false, error: err.code, message: msg, details: err.details });
+      return;
+    }
     logger.error(`❌ Falha processando ${event}: ${msg}`);
     auditLog.record('bitrix', event, body, 'error', msg);
     res.status(500).json({ ok: false, error: msg });

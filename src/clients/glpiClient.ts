@@ -162,6 +162,95 @@ export class GlpiClient {
     });
   }
 
+  /**
+   * Procura um Group cujo campo `code` seja igual ao CNPJ (14 dígitos limpos).
+   * Lê em páginas e compara normalizado, porque o GLPI pode ter o code com formato
+   * variado e o endpoint /search/Group é instável entre versões.
+   */
+  async findGroupByCode(cnpj: string): Promise<{ id: number; name: string; entities_id: number } | null> {
+    if (cnpj.length !== 14) return null;
+    return this.request(async (headers) => {
+      // GET /Group sem search — paginamos manualmente até achar
+      const PAGE = 50;
+      for (let offset = 0; offset < 2000; offset += PAGE) {
+        const res = await this.http.get<
+          Array<{ id: number; name: string; code?: string; entities_id?: number }>
+        >('/Group', { headers, params: { range: `${offset}-${offset + PAGE - 1}` } });
+        const list = Array.isArray(res.data) ? res.data : [];
+        if (list.length === 0) break;
+        for (const g of list) {
+          const code = String(g.code ?? '').replace(/\D+/g, '');
+          if (code === cnpj) {
+            return { id: g.id, name: g.name, entities_id: g.entities_id ?? 0 };
+          }
+        }
+        if (list.length < PAGE) break;
+      }
+      return null;
+    });
+  }
+
+  /**
+   * Cria um Ticket no GLPI vinculado a um grupo cliente (requester).
+   * @param input    Campos do Ticket (name, content, status opcionais)
+   * @param groupId  ID do grupo "requester" (cliente)
+   * @param entitiesId Entidade onde o ticket vai ser criado (do grupo)
+   */
+  async createTicket(args: {
+    name: string;
+    content: string;
+    groupId: number;
+    entitiesId: number;
+    requesterUserId?: number;
+    priority?: number;
+    urgency?: number;
+    impact?: number;
+  }): Promise<number> {
+    return this.request(async (headers) => {
+      // 1) cria o ticket
+      const createRes = await this.http.post<{ id: number } | Array<{ id: number }>>(
+        '/Ticket',
+        {
+          input: {
+            name: args.name,
+            content: args.content,
+            entities_id: args.entitiesId,
+            priority: args.priority ?? 3,
+            urgency: args.urgency ?? 3,
+            impact: args.impact ?? 3,
+            status: GLPI_TICKET_STATUS.NEW
+          }
+        },
+        { headers }
+      );
+      const ticketId = Array.isArray(createRes.data) ? createRes.data[0].id : createRes.data.id;
+
+      // 2) vincula o grupo como requester (type=1)
+      await this.http.post(
+        '/Group_Ticket',
+        { input: { tickets_id: ticketId, groups_id: args.groupId, type: 1 } },
+        { headers }
+      );
+
+      // 3) se passar um usuário requester, vincula também
+      if (args.requesterUserId) {
+        await this.http.post(
+          '/Ticket_User',
+          {
+            input: {
+              tickets_id: ticketId,
+              users_id: args.requesterUserId,
+              type: 1 // requester
+            }
+          },
+          { headers }
+        );
+      }
+
+      return ticketId;
+    });
+  }
+
   async solveTicket(ticketId: number, content: string, usersId?: number): Promise<void> {
     await this.request(async (headers) => {
       await this.http.post(

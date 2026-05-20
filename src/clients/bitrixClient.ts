@@ -87,9 +87,22 @@ export class BitrixClient {
     await this.call('tasks.task.update', { taskId, fields });
   }
 
-  async getTask(taskId: number): Promise<BitrixTask> {
-    const res = await this.call<{ task: BitrixTask }>('tasks.task.get', { taskId });
+  async getTask(taskId: number, select?: string[]): Promise<BitrixTask & Record<string, unknown>> {
+    const params: Record<string, unknown> = { taskId };
+    if (select) params.select = select;
+    const res = await this.call<{ task: BitrixTask & Record<string, unknown> }>('tasks.task.get', params);
     return res.task;
+  }
+
+  /**
+   * Lê uma Company completa do CRM, com o select customizado.
+   * Útil para extrair o CNPJ via o campo UF_CRM_... configurado.
+   */
+  async getCompany(id: number, select?: string[]): Promise<Record<string, unknown>> {
+    return this.call<Record<string, unknown>>('crm.company.get', {
+      ID: id,
+      ...(select ? { select } : {})
+    });
   }
 
   async completeTask(taskId: number): Promise<void> {
