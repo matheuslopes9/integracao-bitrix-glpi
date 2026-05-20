@@ -21,38 +21,44 @@ router.get('/healthz', (_req, res) => {
 });
 
 /**
- * GLPI -> integrador.
- *
- * GLPI 11 envia payload aninhado:
- *   {
- *     "event": "new" | "update" | ...,
- *     "itemtype": "Ticket" | "ITILFollowup",
- *     "item": { "id": "...", "name": "...", "content": "...", "status": {...}, ... }
- *   }
- *
- * Assinatura HMAC-SHA256 vem em X-GLPI-signature.
+ * Endpoint que recebe webhooks do GLPI 11.
+ * Headers: X-GLPI-signature (HMAC-SHA256 de body+timestamp), X-GLPI-timestamp.
  */
 router.post('/webhooks/glpi', verifyGlpiSignature, async (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown>;
   const event = parseGlpiPayload(body);
-  logger.info(
-    { eventKind: event.kind, dryRun: config.DRY_RUN, rawEvent: body.event, rawItemtype: body.itemtype },
-    'webhook GLPI recebido'
-  );
+
+  // Pega o nome curto do cliente (grupo no team[]) para o log ficar mais informativo
+  const teamCompany =
+    Array.isArray((body.item as { team?: unknown[] } | undefined)?.team)
+      ? ((body.item as { team: Array<{ role?: string; display_name?: string; href?: string }> }).team
+          .find((t) => t.role === 'requester' && t.href?.includes('group.form.php'))?.display_name)
+      : undefined;
 
   if (event.kind === 'unknown') {
-    logger.warn({ reason: event.reason, body }, 'evento GLPI ignorado');
-    auditLog.record('glpi', `unknown`, body, 'error', event.reason);
+    logger.warn(
+      `📭 GLPI -> ignorado: ${event.reason} (rawEvent="${String(body.event ?? '?')}")`
+    );
+    auditLog.record('glpi', 'unknown', body, 'error', event.reason);
     res.json({ ok: true, ignored: true, reason: event.reason });
     return;
   }
 
+  const summary =
+    event.kind === 'ticket.add'
+      ? `Ticket #${event.ticketId} aberto${teamCompany ? ` por ${teamCompany}` : ''}`
+      : event.kind === 'ticket.update'
+        ? `Ticket #${event.ticketId} atualizado`
+        : `Followup #${event.followupId} no ticket #${event.ticketId}`;
+
   if (config.DRY_RUN) {
-    logger.info({ event }, '[DRY_RUN] evento seria processado, mas nada será criado/alterado');
+    logger.info(`🟡 DRY_RUN | GLPI -> ${event.kind} | ${summary}`);
     auditLog.record('glpi', event.kind, body, 'ok', 'dry-run');
     res.json({ ok: true, dryRun: true, event });
     return;
   }
+
+  logger.info(`📥 GLPI -> ${event.kind} | ${summary}`);
 
   try {
     switch (event.kind) {
@@ -75,29 +81,33 @@ router.post('/webhooks/glpi', verifyGlpiSignature, async (req: Request, res: Res
     res.json({ ok: true });
   } catch (err) {
     const msg = (err as Error).message;
-    logger.error({ err: msg, event }, 'falha processando webhook GLPI');
+    logger.error(`❌ Falha processando ${event.kind}: ${msg}`);
     auditLog.record('glpi', event.kind, body, 'error', msg);
     res.status(500).json({ ok: false, error: msg });
   }
 });
 
 /**
- * Bitrix -> integrador. Eventos ONTASKADD/UPDATE/COMMENTADD vêm como form-urlencoded ou json.
+ * Endpoint que recebe eventos de saída do Bitrix24 (ONTASKADD/UPDATE/COMMENTADD).
  */
 router.post('/webhooks/bitrix', verifyBitrixSecret, async (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown> & {
     event?: string;
-    data?: Record<string, unknown> & { FIELDS_AFTER?: Record<string, unknown>; FIELDS_BEFORE?: Record<string, unknown> };
+    data?: Record<string, unknown> & {
+      FIELDS_AFTER?: Record<string, unknown>;
+      FIELDS_BEFORE?: Record<string, unknown>;
+    };
   };
   const event = String(body.event ?? body.EVENT ?? '').toUpperCase();
-  logger.info({ event, dryRun: config.DRY_RUN }, 'webhook Bitrix recebido');
 
   if (config.DRY_RUN) {
-    logger.info({ event, body }, '[DRY_RUN] evento Bitrix seria processado, mas nada será criado/alterado');
+    logger.info(`🟡 DRY_RUN | Bitrix -> ${event}`);
     auditLog.record('bitrix', event, body, 'ok', 'dry-run');
     res.json({ ok: true, dryRun: true });
     return;
   }
+
+  logger.info(`📥 Bitrix -> ${event}`);
 
   try {
     if (event === 'ONTASKUPDATE' || event === 'ONTASKADD') {
@@ -105,9 +115,7 @@ router.post('/webhooks/bitrix', verifyBitrixSecret, async (req: Request, res: Re
         body.data?.FIELDS_AFTER?.ID ??
           (body.data as { FIELDS?: { ID?: unknown } } | undefined)?.FIELDS?.ID
       );
-      if (Number.isFinite(taskId)) {
-        await handleBitrixTaskUpdated(taskId);
-      }
+      if (Number.isFinite(taskId)) await handleBitrixTaskUpdated(taskId);
     } else if (event === 'ONTASKCOMMENTADD') {
       const taskId = Number((body.data as { TASK_ID?: unknown } | undefined)?.TASK_ID);
       const commentId = Number((body.data as { ID?: unknown } | undefined)?.ID);
@@ -115,13 +123,13 @@ router.post('/webhooks/bitrix', verifyBitrixSecret, async (req: Request, res: Re
         await handleBitrixTaskCommentAdded(taskId, commentId);
       }
     } else {
-      logger.warn({ event }, 'evento Bitrix nao suportado, ignorando');
+      logger.warn(`📭 Bitrix -> evento ignorado: ${event}`);
     }
     auditLog.record('bitrix', event, body, 'ok');
     res.json({ ok: true });
   } catch (err) {
     const msg = (err as Error).message;
-    logger.error({ err: msg, event }, 'falha processando webhook Bitrix');
+    logger.error(`❌ Falha processando ${event}: ${msg}`);
     auditLog.record('bitrix', event, body, 'error', msg);
     res.status(500).json({ ok: false, error: msg });
   }
