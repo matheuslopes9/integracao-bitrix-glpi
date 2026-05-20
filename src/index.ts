@@ -3,7 +3,7 @@ import pinoHttp from 'pino-http';
 import { config } from './config';
 import { logger } from './logger';
 import { router } from './http/routes';
-import { rawBodyCapture } from './http/verifySignature';
+import { captureRawBody } from './http/verifySignature';
 
 const app = express();
 
@@ -45,12 +45,11 @@ app.use(
   })
 );
 
-// Para a rota /webhooks/glpi precisamos do raw body para validar HMAC.
-// Captura ANTES do parser JSON do Express.
-app.use('/webhooks/glpi', rawBodyCapture);
-// Bitrix envia form-urlencoded e/ou json
+// Body parsers — usamos a opção `verify` do express.json para preservar o body raw
+// nas rotas /webhooks/*, sem precisar de um middleware separado que escute 'data'/'end'
+// no stream (isso causa "stream is not readable" quando pino-http já leu o stream).
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '1mb', verify: captureRawBody }));
 
 app.use(router);
 

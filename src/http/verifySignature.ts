@@ -11,30 +11,17 @@ function timingSafeEqualHex(a: string, b: string): boolean {
 }
 
 /**
- * Captura raw body como Buffer (sem mexer no encoding do stream).
- * Em alguns ambientes (atrás de proxy/EasyPanel), chamar setEncoding('utf8') causa
- * "stream encoding should not be set" e o body fica vazio.
+ * Callback `verify` do express.json() — preserva o body raw ANTES do parse JSON.
+ *
+ * Em vez de criar um middleware separado que escuta 'data'/'end' (o que causa
+ * "stream is not readable" quando outro middleware já tocou no stream — pino-http
+ * faz isso), aproveitamos o próprio parser do express, que já recebe o buffer.
  */
-export function rawBodyCapture(req: Request, _res: Response, next: NextFunction) {
-  const chunks: Buffer[] = [];
-  req.on('data', (chunk: Buffer | string) => {
-    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
-  });
-  req.on('end', () => {
-    const buf = Buffer.concat(chunks);
-    const text = buf.toString('utf8');
-    (req as Request & { rawBody?: string }).rawBody = text;
-    try {
-      req.body = text ? JSON.parse(text) : {};
-    } catch {
-      req.body = {};
-    }
-    next();
-  });
-  req.on('error', (err) => {
-    logger.error({ err: err.message }, 'rawBodyCapture stream error');
-    next(err);
-  });
+export function captureRawBody(req: Request, _res: Response, buf: Buffer) {
+  // só guarda se for uma requisição que precisa de raw body (webhook)
+  if (req.url?.startsWith('/webhooks/')) {
+    (req as Request & { rawBody?: string }).rawBody = buf.toString('utf8');
+  }
 }
 
 /**
@@ -43,10 +30,6 @@ export function rawBodyCapture(req: Request, _res: Response, next: NextFunction)
  * Conforme src/Webhook.php do GLPI 11:
  *   X-GLPI-signature = hash_hmac('sha256', body + timestamp, secret)
  *   X-GLPI-timestamp = timestamp UNIX em segundos (string numérica)
- *
- * Nota: a janela de tempo não é aplicada porque o GLPI pode reprocessar webhooks
- * antigos da fila. Replay-protection precisa ser feita por idempotência (id do
- * evento), não por timestamp.
  */
 export function verifyGlpiSignature(req: Request, res: Response, next: NextFunction) {
   const rawBody = (req as Request & { rawBody?: string }).rawBody ?? '';
