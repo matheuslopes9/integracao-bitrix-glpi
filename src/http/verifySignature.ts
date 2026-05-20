@@ -71,14 +71,37 @@ export function verifyGlpiSignature(req: Request, res: Response, next: NextFunct
   const provided = sig.startsWith('sha256=') ? sig.slice(7) : sig;
 
   if (!timingSafeEqualHex(expected, provided)) {
+    // Tenta variantes para descobrir qual o GLPI usa de fato
+    const variants = {
+      bodyOnly: crypto.createHmac('sha256', config.GLPI_WEBHOOK_SECRET).update(rawBody).digest('hex'),
+      timestampOnly: crypto
+        .createHmac('sha256', config.GLPI_WEBHOOK_SECRET)
+        .update(tsHeader)
+        .digest('hex'),
+      bodyPlusTs: expected,
+      tsPlusBody: crypto
+        .createHmac('sha256', config.GLPI_WEBHOOK_SECRET)
+        .update(tsHeader + rawBody)
+        .digest('hex'),
+      bodyTrimPlusTs: crypto
+        .createHmac('sha256', config.GLPI_WEBHOOK_SECRET)
+        .update(rawBody.trim() + tsHeader)
+        .digest('hex')
+    };
+    const matched = Object.entries(variants).find(([, v]) => v.toLowerCase() === provided.toLowerCase());
     logger.warn(
       {
-        providedPreview: provided.slice(0, 12),
-        expectedPreview: expected.slice(0, 12),
+        provided,
         timestamp: tsHeader,
-        bodyLen: rawBody.length
+        bodyLen: rawBody.length,
+        bodyFirst200: rawBody.slice(0, 200),
+        bodyLast200: rawBody.slice(-200),
+        secretLen: config.GLPI_WEBHOOK_SECRET.length,
+        secretPreview: config.GLPI_WEBHOOK_SECRET.slice(0, 4) + '...' + config.GLPI_WEBHOOK_SECRET.slice(-4),
+        variants,
+        matchedVariant: matched?.[0] ?? 'NONE'
       },
-      'assinatura GLPI invalida'
+      '[DEBUG] assinatura GLPI invalida - inspecionando variantes'
     );
     res.status(401).json({ error: 'invalid signature' });
     return;
