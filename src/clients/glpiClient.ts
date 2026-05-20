@@ -266,13 +266,18 @@ export class GlpiClient {
     content: string;
     groupId: number;
     entitiesId: number;
+    /** Usuário GLPI que vai aparecer como TÉCNICO ATRIBUÍDO ao chamado (type=2) */
+    assignedUserId?: number;
+    /** Usuário GLPI que vai aparecer como REQUESTER (type=1) — opcional */
     requesterUserId?: number;
     priority?: number;
     urgency?: number;
     impact?: number;
   }): Promise<number> {
     return this.request(async (headers) => {
-      // 1) cria o ticket
+      // 1) cria o ticket — se tiver técnico atribuído, status já vira "atribuído"
+      const initialStatus =
+        args.assignedUserId !== undefined ? GLPI_TICKET_STATUS.PROCESSING_ASSIGNED : GLPI_TICKET_STATUS.NEW;
       const createRes = await this.http.post<{ id: number } | Array<{ id: number }>>(
         '/Ticket',
         {
@@ -283,31 +288,34 @@ export class GlpiClient {
             priority: args.priority ?? 3,
             urgency: args.urgency ?? 3,
             impact: args.impact ?? 3,
-            status: GLPI_TICKET_STATUS.NEW
+            status: initialStatus
           }
         },
         { headers }
       );
       const ticketId = Array.isArray(createRes.data) ? createRes.data[0].id : createRes.data.id;
 
-      // 2) vincula o grupo como requester (type=1)
+      // 2) vincula o grupo como requester (type=1) — grupo é cliente, sempre requester
       await this.http.post(
         '/Group_Ticket',
         { input: { tickets_id: ticketId, groups_id: args.groupId, type: 1 } },
         { headers }
       );
 
-      // 3) se passar um usuário requester, vincula também
+      // 3) vincula o técnico atribuído (type=2)
+      if (args.assignedUserId) {
+        await this.http.post(
+          '/Ticket_User',
+          { input: { tickets_id: ticketId, users_id: args.assignedUserId, type: 2 } },
+          { headers }
+        );
+      }
+
+      // 4) vincula um usuário requester (type=1) se passado
       if (args.requesterUserId) {
         await this.http.post(
           '/Ticket_User',
-          {
-            input: {
-              tickets_id: ticketId,
-              users_id: args.requesterUserId,
-              type: 1 // requester
-            }
-          },
+          { input: { tickets_id: ticketId, users_id: args.requesterUserId, type: 1 } },
           { headers }
         );
       }

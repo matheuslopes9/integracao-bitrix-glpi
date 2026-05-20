@@ -157,19 +157,20 @@ export async function handleBitrixTaskAdded(taskId: number): Promise<void> {
     `🔗 Bitrix: https://uctech.bitrix24.com.br/company/personal/user/${task.createdBy ?? config.BITRIX_DEFAULT_CREATOR_ID}/tasks/task/view/${taskId}/`
   ].join('\n');
 
-  // Resolve o atendente: tenta mapeamento estatico no SQLite primeiro; senao busca por email
-  let requesterGlpiUserId: number | undefined;
+  // Resolve o ATENDENTE (= técnico atribuído no GLPI):
+  // quem criou a task no Bitrix vira o técnico do chamado.
+  // Estratégia: cache (user_link) -> email lookup -> aprende para próxima.
+  let assignedGlpiUserId: number | undefined;
   if (task.createdBy) {
     const bitrixUserId = Number(task.createdBy);
-    requesterGlpiUserId = userRepo.bitrixToGlpi(bitrixUserId);
-    if (!requesterGlpiUserId) {
+    assignedGlpiUserId = userRepo.bitrixToGlpi(bitrixUserId);
+    if (!assignedGlpiUserId) {
       try {
         const email = await bitrixClient.getUserEmail(bitrixUserId);
         if (email) {
           const glpiUser = await glpiClient.findUserByEmail(email);
           if (glpiUser) {
-            requesterGlpiUserId = glpiUser.id;
-            // Aprende para próximas vezes
+            assignedGlpiUserId = glpiUser.id;
             userRepo.upsert(glpiUser.id, bitrixUserId, email, 'auto-link via email');
             logger.info(`🔗 Mapeamento aprendido: Bitrix #${bitrixUserId} (${email}) <-> GLPI #${glpiUser.id}`);
           } else {
@@ -187,7 +188,7 @@ export async function handleBitrixTaskAdded(taskId: number): Promise<void> {
     content: description,
     groupId: group.id,
     entitiesId: group.entities_id, // <-- entidade INFERIDA do grupo
-    requesterUserId: requesterGlpiUserId
+    assignedUserId: assignedGlpiUserId // <-- atendente vira TÉCNICO atribuído
   });
 
   linkRepo.upsert(ticketId, taskId);
@@ -195,8 +196,9 @@ export async function handleBitrixTaskAdded(taskId: number): Promise<void> {
   // queremos ignorar (senão criamos uma task duplicada no Bitrix)
   echoGuard.arm(`glpi-ticket-add:${ticketId}`, 30_000);
 
+  const tecnicoInfo = assignedGlpiUserId ? ` | técnico atribuído: GLPI user #${assignedGlpiUserId}` : ' | sem técnico atribuído';
   logger.info(
-    `✅ Task Bitrix #${taskId} (${company.TITLE}) -> Ticket GLPI #${ticketId} criado no grupo "${group.name}" (entidade ${group.entities_id})`
+    `✅ Task Bitrix #${taskId} (${company.TITLE}) -> Ticket GLPI #${ticketId} criado no grupo "${group.name}" (entidade ${group.entities_id})${tecnicoInfo}`
   );
 }
 
