@@ -78,6 +78,8 @@ export async function handleBitrixTaskAdded(taskId: number): Promise<void> {
     return;
   }
 
+  // Importante: o Bitrix retorna campos em camelCase no response (ufCrmTask, tags).
+  // Sem select, UF_CRM_TASK e tags NÃO vêm por padrão — precisam estar listados.
   const task = await bitrixClient.getTask(taskId, [
     'ID',
     'TITLE',
@@ -85,16 +87,33 @@ export async function handleBitrixTaskAdded(taskId: number): Promise<void> {
     'CREATED_BY',
     'RESPONSIBLE_ID',
     'STATUS',
+    'TAGS',
     'UF_CRM_TASK'
   ]);
 
+  if (!task) {
+    logger.warn(`📭 Task Bitrix #${taskId} retornou null no getTask — ignorando`);
+    return;
+  }
+
   // Tag-check anti-loop: tarefa criada a partir do GLPI tem tag "glpi"
-  const tags = (task.tags as Record<string, { title?: string }> | undefined) ?? {};
-  for (const t of Object.values(tags)) {
-    if (t.title === 'glpi') {
-      logger.info(`🔁 Task Bitrix #${taskId} tem tag "glpi", origem do GLPI - ignorando`);
-      return;
+  // task.tags pode vir como object { "id": { title }, ... }, array de strings, ou undefined
+  const rawTags = (task.tags ?? (task as { TAGS?: unknown }).TAGS) as unknown;
+  const tagTitles: string[] = [];
+  if (Array.isArray(rawTags)) {
+    for (const t of rawTags) {
+      if (typeof t === 'string') tagTitles.push(t);
+      else if (t && typeof t === 'object' && 'title' in t) tagTitles.push(String((t as { title: unknown }).title));
     }
+  } else if (rawTags && typeof rawTags === 'object') {
+    for (const v of Object.values(rawTags as Record<string, unknown>)) {
+      if (typeof v === 'string') tagTitles.push(v);
+      else if (v && typeof v === 'object' && 'title' in v) tagTitles.push(String((v as { title: unknown }).title));
+    }
+  }
+  if (tagTitles.includes('glpi')) {
+    logger.info(`🔁 Task Bitrix #${taskId} tem tag "glpi", origem do GLPI - ignorando`);
+    return;
   }
 
   // Extrai Company ID da tarefa
@@ -176,7 +195,11 @@ export async function handleBitrixTaskUpdated(taskId: number): Promise<void> {
     await handleBitrixTaskAdded(taskId);
     return;
   }
-  const task = await bitrixClient.getTask(taskId);
+  const task = await bitrixClient.getTask(taskId, ['ID', 'STATUS', 'RESPONSIBLE_ID']);
+  if (!task) {
+    logger.warn(`📭 Task Bitrix #${taskId} não encontrada — ignorando update`);
+    return;
+  }
   const statusNum = Number(task.status);
   const glpiStatus = mapBitrixStatusToGlpi(statusNum);
 
