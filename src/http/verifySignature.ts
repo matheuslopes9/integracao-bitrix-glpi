@@ -71,47 +71,20 @@ export function verifyGlpiSignature(req: Request, res: Response, next: NextFunct
   }
 
   const provided = (sig.startsWith('sha256=') ? sig.slice(7) : sig).toLowerCase();
-  const secret = config.GLPI_WEBHOOK_SECRET;
+  const expected = crypto
+    .createHmac('sha256', config.GLPI_WEBHOOK_SECRET)
+    .update(rawBody + tsHeader)
+    .digest('hex');
 
-  // Calcula a variante "oficial" do GLPI: HMAC(body + timestamp)
-  const expectedBodyPlusTs = crypto.createHmac('sha256', secret).update(rawBody + tsHeader).digest('hex');
-
-  if (timingSafeEqualHex(expectedBodyPlusTs, provided)) {
-    return next();
+  if (!timingSafeEqualHex(expected, provided)) {
+    logger.warn(
+      { providedPreview: provided.slice(0, 12), expectedPreview: expected.slice(0, 12) },
+      'assinatura GLPI invalida'
+    );
+    res.status(401).json({ error: 'invalid signature' });
+    return;
   }
-
-  // ---- Não bateu. Faz log de DEBUG com variantes para identificar o algoritmo certo. ----
-  const variants: Record<string, string> = {
-    bodyOnly: crypto.createHmac('sha256', secret).update(rawBody).digest('hex'),
-    tsOnly: crypto.createHmac('sha256', secret).update(tsHeader).digest('hex'),
-    bodyPlusTs: expectedBodyPlusTs,
-    tsPlusBody: crypto.createHmac('sha256', secret).update(tsHeader + rawBody).digest('hex'),
-    bodyTrimPlusTs: crypto.createHmac('sha256', secret).update(rawBody.trim() + tsHeader).digest('hex'),
-    bodyPlusTsTrim: crypto.createHmac('sha256', secret).update(rawBody + tsHeader.trim()).digest('hex'),
-    // GLPI talvez assine sem o timestamp, mas em SHA1
-    bodyOnlySha1: crypto.createHmac('sha1', secret).update(rawBody).digest('hex'),
-    // ou em base64 ao invés de hex
-    bodyPlusTsBase64: crypto.createHmac('sha256', secret).update(rawBody + tsHeader).digest('base64')
-  };
-
-  const matched = Object.entries(variants).find(([, v]) => v.toLowerCase() === provided);
-
-  logger.warn(
-    {
-      provided,
-      tsHeader,
-      bodyLen: rawBody.length,
-      bodyFirst100: rawBody.slice(0, 100),
-      bodyLast100: rawBody.slice(-100),
-      secretLen: secret.length,
-      secretPreview: secret.slice(0, 4) + '...' + secret.slice(-4),
-      variants,
-      matchedVariant: matched?.[0] ?? 'NONE'
-    },
-    '[DEBUG] assinatura GLPI invalida'
-  );
-
-  res.status(401).json({ error: 'invalid signature' });
+  next();
 }
 
 export function verifyBitrixSecret(req: Request, res: Response, next: NextFunction) {

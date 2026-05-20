@@ -70,6 +70,30 @@ function classifyItemtype(raw: string | undefined): 'ticket' | 'followup' | 'oth
 }
 
 /**
+ * Quando o GLPI 11 não envia o campo "itemtype" no body (cada webhook é dedicado a um itemtype,
+ * então a info é redundante), inferimos pelo formato do payload.
+ *
+ * Heurísticas:
+ *  - presença de `item.team`, `item.priority`, `item.urgency` → Ticket
+ *  - presença de `item.tickets_id` ou `item.itemtype === 'Ticket'` (de dentro do item) → Followup
+ */
+function inferItemtype(body: GlpiNestedPayload): 'ticket' | 'followup' | 'other' {
+  const item = body.item;
+  if (!item || typeof item !== 'object') return 'other';
+
+  const hasTicketFields =
+    'team' in item || 'priority' in item || 'urgency' in item || 'impact' in item || 'request_type' in item;
+  const hasFollowupFields =
+    'tickets_id' in item ||
+    (typeof (item as { itemtype?: unknown }).itemtype === 'string' &&
+      String((item as { itemtype?: unknown }).itemtype).toLowerCase() === 'ticket');
+
+  if (hasFollowupFields && !hasTicketFields) return 'followup';
+  if (hasTicketFields) return 'ticket';
+  return 'other';
+}
+
+/**
  * Recebe o payload bruto do webhook GLPI (em formato GLPI 10 flat ou GLPI 11 aninhado)
  * e devolve um evento normalizado pronto para os handlers.
  */
@@ -79,7 +103,12 @@ export function parseGlpiPayload(body: unknown): GlpiNormalizedEvent {
   }
   const b = body as GlpiNestedPayload & GlpiFlatPayload;
 
-  const itemtype = classifyItemtype(b.itemtype ?? b.item_type);
+  // GLPI 11 não inclui "itemtype" no payload (cada webhook é dedicado a um tipo).
+  // Tentamos primeiro pelo campo explícito (GLPI 10) e depois inferimos pela forma do item.
+  let itemtype = classifyItemtype(b.itemtype ?? b.item_type);
+  if (itemtype === 'other') {
+    itemtype = inferItemtype(b);
+  }
   const eventClass = classifyEvent(b.event);
 
   // ---------- Ticket ----------
