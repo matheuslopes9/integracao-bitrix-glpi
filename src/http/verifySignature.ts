@@ -4,26 +4,36 @@ import { config } from '../config';
 import { logger } from '../logger';
 
 function timingSafeEqualHex(a: string, b: string): boolean {
-  // hex strings podem ter case diferente; normaliza
   const aBuf = Buffer.from(a.toLowerCase(), 'utf8');
   const bBuf = Buffer.from(b.toLowerCase(), 'utf8');
   if (aBuf.length !== bBuf.length) return false;
   return crypto.timingSafeEqual(aBuf, bBuf);
 }
 
-// Captura raw body antes do parser JSON do Express. Necessário para HMAC.
+/**
+ * Captura raw body como Buffer (sem mexer no encoding do stream).
+ * Em alguns ambientes (atrás de proxy/EasyPanel), chamar setEncoding('utf8') causa
+ * "stream encoding should not be set" e o body fica vazio.
+ */
 export function rawBodyCapture(req: Request, _res: Response, next: NextFunction) {
-  let data = '';
-  req.setEncoding('utf8');
-  req.on('data', (chunk) => (data += chunk));
+  const chunks: Buffer[] = [];
+  req.on('data', (chunk: Buffer | string) => {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+  });
   req.on('end', () => {
-    (req as Request & { rawBody?: string }).rawBody = data;
+    const buf = Buffer.concat(chunks);
+    const text = buf.toString('utf8');
+    (req as Request & { rawBody?: string }).rawBody = text;
     try {
-      req.body = data ? JSON.parse(data) : {};
+      req.body = text ? JSON.parse(text) : {};
     } catch {
       req.body = {};
     }
     next();
+  });
+  req.on('error', (err) => {
+    logger.error({ err: err.message }, 'rawBodyCapture stream error');
+    next(err);
   });
 }
 
@@ -34,10 +44,9 @@ export function rawBodyCapture(req: Request, _res: Response, next: NextFunction)
  *   X-GLPI-signature = hash_hmac('sha256', body + timestamp, secret)
  *   X-GLPI-timestamp = timestamp UNIX em segundos (string numérica)
  *
- * O body é o JSON renderizado pelo template Twig (o que chega aqui em rawBody).
- * A chave secreta no GLPI fica criptografada com GLPIKey e é descriptografada antes
- * de assinar — no nosso .env guardamos o valor PLAINTEXT (como aparece no campo
- * "Segredo" do GLPI quando você clica no olhinho).
+ * Nota: a janela de tempo não é aplicada porque o GLPI pode reprocessar webhooks
+ * antigos da fila. Replay-protection precisa ser feita por idempotência (id do
+ * evento), não por timestamp.
  */
 export function verifyGlpiSignature(req: Request, res: Response, next: NextFunction) {
   const rawBody = (req as Request & { rawBody?: string }).rawBody ?? '';
@@ -51,78 +60,61 @@ export function verifyGlpiSignature(req: Request, res: Response, next: NextFunct
     req.header('x-glpi-timestamp');
 
   if (!sig) {
-    logger.warn({ headers: req.headers }, 'GLPI webhook sem X-GLPI-signature');
+    logger.warn('GLPI webhook sem X-GLPI-signature');
     res.status(401).json({ error: 'missing signature header' });
     return;
   }
   if (!tsHeader) {
-    logger.warn({ headers: req.headers }, 'GLPI webhook sem X-GLPI-timestamp');
+    logger.warn('GLPI webhook sem X-GLPI-timestamp');
     res.status(401).json({ error: 'missing timestamp header' });
     return;
   }
 
-  // GLPI assina body+timestamp concatenados (timestamp como string)
-  const expected = crypto
-    .createHmac('sha256', config.GLPI_WEBHOOK_SECRET)
-    .update(rawBody + tsHeader)
-    .digest('hex');
+  const provided = (sig.startsWith('sha256=') ? sig.slice(7) : sig).toLowerCase();
+  const secret = config.GLPI_WEBHOOK_SECRET;
 
-  // GLPI manda hex puro, mas aceitamos variantes "sha256=" por segurança
-  const provided = sig.startsWith('sha256=') ? sig.slice(7) : sig;
+  // Calcula a variante "oficial" do GLPI: HMAC(body + timestamp)
+  const expectedBodyPlusTs = crypto.createHmac('sha256', secret).update(rawBody + tsHeader).digest('hex');
 
-  if (!timingSafeEqualHex(expected, provided)) {
-    // Tenta variantes para descobrir qual o GLPI usa de fato
-    const variants = {
-      bodyOnly: crypto.createHmac('sha256', config.GLPI_WEBHOOK_SECRET).update(rawBody).digest('hex'),
-      timestampOnly: crypto
-        .createHmac('sha256', config.GLPI_WEBHOOK_SECRET)
-        .update(tsHeader)
-        .digest('hex'),
-      bodyPlusTs: expected,
-      tsPlusBody: crypto
-        .createHmac('sha256', config.GLPI_WEBHOOK_SECRET)
-        .update(tsHeader + rawBody)
-        .digest('hex'),
-      bodyTrimPlusTs: crypto
-        .createHmac('sha256', config.GLPI_WEBHOOK_SECRET)
-        .update(rawBody.trim() + tsHeader)
-        .digest('hex')
-    };
-    const matched = Object.entries(variants).find(([, v]) => v.toLowerCase() === provided.toLowerCase());
-    logger.warn(
-      {
-        provided,
-        timestamp: tsHeader,
-        bodyLen: rawBody.length,
-        bodyFirst200: rawBody.slice(0, 200),
-        bodyLast200: rawBody.slice(-200),
-        secretLen: config.GLPI_WEBHOOK_SECRET.length,
-        secretPreview: config.GLPI_WEBHOOK_SECRET.slice(0, 4) + '...' + config.GLPI_WEBHOOK_SECRET.slice(-4),
-        variants,
-        matchedVariant: matched?.[0] ?? 'NONE'
-      },
-      '[DEBUG] assinatura GLPI invalida - inspecionando variantes'
-    );
-    res.status(401).json({ error: 'invalid signature' });
-    return;
+  if (timingSafeEqualHex(expectedBodyPlusTs, provided)) {
+    return next();
   }
 
-  // Sanity check no timestamp (defesa contra replay): aceita ±10 minutos
-  const ts = Number(tsHeader);
-  const skewSec = Math.abs(Date.now() / 1000 - ts);
-  if (Number.isFinite(ts) && skewSec > 600) {
-    logger.warn({ skewSec }, 'GLPI webhook com timestamp muito antigo/futuro');
-    res.status(401).json({ error: 'timestamp out of window' });
-    return;
-  }
+  // ---- Não bateu. Faz log de DEBUG com variantes para identificar o algoritmo certo. ----
+  const variants: Record<string, string> = {
+    bodyOnly: crypto.createHmac('sha256', secret).update(rawBody).digest('hex'),
+    tsOnly: crypto.createHmac('sha256', secret).update(tsHeader).digest('hex'),
+    bodyPlusTs: expectedBodyPlusTs,
+    tsPlusBody: crypto.createHmac('sha256', secret).update(tsHeader + rawBody).digest('hex'),
+    bodyTrimPlusTs: crypto.createHmac('sha256', secret).update(rawBody.trim() + tsHeader).digest('hex'),
+    bodyPlusTsTrim: crypto.createHmac('sha256', secret).update(rawBody + tsHeader.trim()).digest('hex'),
+    // GLPI talvez assine sem o timestamp, mas em SHA1
+    bodyOnlySha1: crypto.createHmac('sha1', secret).update(rawBody).digest('hex'),
+    // ou em base64 ao invés de hex
+    bodyPlusTsBase64: crypto.createHmac('sha256', secret).update(rawBody + tsHeader).digest('base64')
+  };
 
-  next();
+  const matched = Object.entries(variants).find(([, v]) => v.toLowerCase() === provided);
+
+  logger.warn(
+    {
+      provided,
+      tsHeader,
+      bodyLen: rawBody.length,
+      bodyFirst100: rawBody.slice(0, 100),
+      bodyLast100: rawBody.slice(-100),
+      secretLen: secret.length,
+      secretPreview: secret.slice(0, 4) + '...' + secret.slice(-4),
+      variants,
+      matchedVariant: matched?.[0] ?? 'NONE'
+    },
+    '[DEBUG] assinatura GLPI invalida'
+  );
+
+  res.status(401).json({ error: 'invalid signature' });
 }
 
 export function verifyBitrixSecret(req: Request, res: Response, next: NextFunction) {
-  // Eventos de saída do Bitrix24 enviam application_token (token do app/event) ou auth.application_token.
-  // Como aqui usamos webhook entrante + um evento outbound configurado pelo admin, esperamos um
-  // campo "auth[application_token]" igual ao nosso segredo.
   const body = req.body as { auth?: { application_token?: string }; application_token?: string };
   const provided =
     body?.auth?.application_token ??
