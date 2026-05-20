@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const BASE = 'https://uctech.bitrix24.com.br/rest/491/ho8n3gntmllz2fkk/';
+const BASE = 'https://uctech.bitrix24.com.br/rest/11013/sv73jkzl96pns8g5/';
 
 const http = axios.create({ baseURL: BASE, timeout: 15_000, validateStatus: () => true });
 

@@ -38,6 +38,11 @@ export interface BitrixTaskFields {
   AUDITORS?: number[];
   ACCOMPLICES?: number[];
   TAGS?: string[];
+  /**
+   * Vincula a tarefa a entidades do CRM. Formato: ["CO_42"] = Company 42,
+   * ["C_5"] = Contact 5, ["L_3"] = Lead 3, ["D_7"] = Deal 7.
+   */
+  UF_CRM_TASK?: string[];
 }
 
 export interface BitrixTask {
@@ -122,6 +127,53 @@ export class BitrixClient {
 
   async findUserByEmail(email: string) {
     return this.call<unknown[]>('user.search', { FILTER: { EMAIL: email } });
+  }
+
+  /**
+   * Procura uma Company no CRM pelo CNPJ (já normalizado para 14 dígitos).
+   *
+   * O filtro do Bitrix com `=CAMPO` faz EQUAL exato, mas as Companies tem o CNPJ
+   * cadastrado em formatos diferentes (alguns com máscara). Por isso fazemos uma
+   * varredura local com normalização: traz até `limit` candidatos cujo CNPJ
+   * "comece com" os primeiros dígitos, e filtramos por igualdade no nosso lado.
+   *
+   * cnpjField: nome do campo UF_CRM_... que guarda o CNPJ (vem da config).
+   */
+  async findCompanyByCnpj(
+    cnpj: string,
+    cnpjField: string,
+    limit = 100
+  ): Promise<{ ID: string; TITLE: string; cnpj: string } | null> {
+    if (cnpj.length !== 14) return null;
+    // 1ª tentativa: busca exata pelo CNPJ já normalizado
+    const exact = await this.call<Array<Record<string, unknown>>>('crm.company.list', {
+      filter: { [`=${cnpjField}`]: cnpj },
+      select: ['ID', 'TITLE', cnpjField],
+      start: 0
+    });
+    for (const c of exact ?? []) {
+      const stored = String(c[cnpjField] ?? '').replace(/\D+/g, '');
+      if (stored === cnpj) {
+        return { ID: String(c.ID), TITLE: String(c.TITLE), cnpj: stored };
+      }
+    }
+
+    // 2ª tentativa: muitas Companies tem o CNPJ com máscara (ex: "71.948.699/0001-64"),
+    // então o filtro exato com dígitos puros falha. Buscamos pelos primeiros 8 dígitos
+    // (raiz do CNPJ) e filtramos no nosso lado.
+    const root = cnpj.slice(0, 8);
+    const candidates = await this.call<Array<Record<string, unknown>>>('crm.company.list', {
+      filter: { [`%${cnpjField}`]: root },
+      select: ['ID', 'TITLE', cnpjField],
+      start: 0
+    });
+    for (const c of (candidates ?? []).slice(0, limit)) {
+      const stored = String(c[cnpjField] ?? '').replace(/\D+/g, '');
+      if (stored === cnpj) {
+        return { ID: String(c.ID), TITLE: String(c.TITLE), cnpj: stored };
+      }
+    }
+    return null;
   }
 }
 

@@ -106,6 +106,36 @@ export class GlpiClient {
     });
   }
 
+  /**
+   * Lê um Group do GLPI. O campo `code` é onde armazenamos o CNPJ do cliente.
+   */
+  async getGroup(id: number): Promise<{ id: number; name: string; code?: string }> {
+    return this.request(async (headers) => {
+      const res = await this.http.get<{ id: number; name: string; code?: string }>(
+        `/Group/${id}`,
+        { headers }
+      );
+      return res.data;
+    });
+  }
+
+  /**
+   * Lista os grupos vinculados a um ticket (filtrados por tipo).
+   * type: 1=requester, 2=assigned, 3=observer
+   */
+  async listTicketGroups(
+    ticketId: number,
+    type: 'requester' | 'assigned' | 'observer' = 'requester'
+  ): Promise<Array<{ groups_id: number; type: number }>> {
+    const typeId = type === 'requester' ? 1 : type === 'assigned' ? 2 : 3;
+    return this.request(async (headers) => {
+      const res = await this.http.get(`/Ticket/${ticketId}/Group_Ticket`, { headers });
+      return (res.data as Array<{ groups_id: number; type: number }>).filter(
+        (r) => r.type === typeId
+      );
+    });
+  }
+
   async addFollowup(ticketId: number, content: string, isPrivate = false, usersId?: number): Promise<number> {
     return this.request(async (headers) => {
       const res = await this.http.post(

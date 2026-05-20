@@ -5,7 +5,8 @@ import { auditLog } from '../db';
 import {
   handleGlpiTicketCreated,
   handleGlpiTicketUpdated,
-  handleGlpiFollowupAdded
+  handleGlpiFollowupAdded,
+  CnpjMatchError
 } from '../sync/glpiToBitrix';
 import {
   handleBitrixTaskUpdated,
@@ -81,6 +82,14 @@ router.post('/webhooks/glpi', verifyGlpiSignature, async (req: Request, res: Res
     res.json({ ok: true });
   } catch (err) {
     const msg = (err as Error).message;
+    if (err instanceof CnpjMatchError) {
+      // Caso de negócio: chamado sem CNPJ válido ou sem Company correspondente.
+      // Devolve 422 (não-retentável) e registra no audit. NÃO é "erro técnico".
+      logger.warn(`⛔ ${msg}`);
+      auditLog.record('glpi', event.kind, body, 'error', `${err.code}: ${msg}`);
+      res.status(422).json({ ok: false, error: err.code, message: msg, details: err.details });
+      return;
+    }
     logger.error(`❌ Falha processando ${event.kind}: ${msg}`);
     auditLog.record('glpi', event.kind, body, 'error', msg);
     res.status(500).json({ ok: false, error: msg });

@@ -19,6 +19,10 @@ const envSchema = z.object({
   BITRIX_DEFAULT_RESPONSIBLE_ID: z.coerce.number().int().positive(),
   BITRIX_DEFAULT_GROUP_ID: z.coerce.number().int().nonnegative().optional(),
 
+  // Código do campo customizado UF_CRM_... que guarda o CNPJ na Company do Bitrix.
+  // Para descobrir o seu, rode: npx tsx scripts/find-cnpj-field.ts
+  BITRIX_CNPJ_FIELD: z.string().regex(/^UF_CRM_/, 'precisa começar com UF_CRM_'),
+
   // Modo simulação: quando ligado, recebe webhooks e processa tudo, MAS não cria/altera
   // nada no Bitrix nem no GLPI - só loga "criaria X com fields Y". Útil para validar em produção
   // sem efeitos colaterais. Ligue temporariamente em DRY_RUN=true e desligue após validar.
