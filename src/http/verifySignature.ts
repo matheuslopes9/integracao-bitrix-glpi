@@ -79,31 +79,14 @@ export function verifyBitrixSecret(req: Request, res: Response, next: NextFuncti
     '';
   const expected = config.BITRIX_WEBHOOK_SECRET;
   if (provided.length !== expected.length) {
-    // [DEBUG] log temporario para diagnosticar divergencia no token Bitrix
-    logger.warn(
-      {
-        providedLen: provided.length,
-        expectedLen: expected.length,
-        providedPreview: provided.slice(0, 6) + '...' + provided.slice(-4),
-        expectedPreview: expected.slice(0, 6) + '...' + expected.slice(-4),
-        bodyKeys: Object.keys((body ?? {}) as Record<string, unknown>),
-        authKeys: Object.keys((body?.auth ?? {}) as Record<string, unknown>)
-      },
-      'Bitrix webhook com token invalido (tamanho)'
-    );
+    logger.warn('Bitrix webhook com token invalido (tamanho)');
     res.status(401).json({ error: 'invalid bitrix token' });
     return;
   }
   const a = Buffer.from(provided);
   const b = Buffer.from(expected);
   if (!crypto.timingSafeEqual(a, b)) {
-    logger.warn(
-      {
-        providedPreview: provided.slice(0, 6) + '...' + provided.slice(-4),
-        expectedPreview: expected.slice(0, 6) + '...' + expected.slice(-4)
-      },
-      'Bitrix webhook com token invalido'
-    );
+    logger.warn('Bitrix webhook com token invalido');
     res.status(401).json({ error: 'invalid bitrix token' });
     return;
   }

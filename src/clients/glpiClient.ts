@@ -109,64 +109,36 @@ export class GlpiClient {
   /**
    * Procura um usuário do GLPI pelo e-mail (case-insensitive).
    *
-   * O GLPI tem duas formas de armazenar email:
-   *   - tabela glpi_useremails (1 user pode ter N emails) → endpoint /UserEmail
-   *   - campo name = login (que muitas instalações usam = email)
+   * No GLPI 11 o endpoint /search/UserEmail retorna HTTP 400 ("ID de campo inválido")
+   * para qualquer field option testada (1-5). A solução estável é varrer /UserEmail
+   * paginado e comparar o campo email no nosso lado.
    *
-   * Estratégia: primeiro tenta search via UserEmail; se não acha,
-   * tenta achar User onde name = email.
+   * A tabela glpi_useremails guarda 1 linha por email, com `users_id` apontando
+   * para o User correspondente. Cada user pode ter N emails (default + alternativos).
    */
   async findUserByEmail(email: string): Promise<{ id: number; name: string } | null> {
     const target = email.trim().toLowerCase();
     if (!target) return null;
     return this.request(async (headers) => {
-      // 1) search por UserEmail
-      try {
-        const res = await this.http.get('/search/UserEmail', {
-          headers,
-          params: {
-            'criteria[0][field]': 2, // email
-            'criteria[0][searchtype]': 'equals',
-            'criteria[0][value]': target,
-            'range': '0-4',
-            'forcedisplay[0]': 3 // users_id
-          }
-        });
-        const rows = (res.data?.data ?? []) as Array<Record<string, unknown>>;
-        if (rows.length > 0) {
-          const userId = Number(rows[0]['3'] ?? rows[0].users_id);
-          if (Number.isFinite(userId) && userId > 0) {
-            const user = await this.http.get<GlpiUser>(`/User/${userId}`, { headers });
-            return { id: userId, name: user.data.name ?? '' };
+      const PAGE = 100;
+      // pagina até achar (limite de segurança: 5000 emails = 50 páginas)
+      for (let offset = 0; offset < 5000; offset += PAGE) {
+        const res = await this.http.get<
+          Array<{ id: number; users_id: number; email?: string; is_default?: number }>
+        >('/UserEmail', { headers, params: { range: `${offset}-${offset + PAGE - 1}` } });
+        const list = Array.isArray(res.data) ? res.data : [];
+        if (list.length === 0) break;
+        for (const row of list) {
+          if (String(row.email ?? '').toLowerCase() === target) {
+            const userId = Number(row.users_id);
+            if (Number.isFinite(userId) && userId > 0) {
+              const user = await this.http.get<GlpiUser>(`/User/${userId}`, { headers });
+              return { id: userId, name: user.data.name ?? target };
+            }
           }
         }
-      } catch {
-        /* ignora — tenta fallback */
+        if (list.length < PAGE) break;
       }
-
-      // 2) fallback: User.name == email (instalações onde login é email)
-      try {
-        const res = await this.http.get('/search/User', {
-          headers,
-          params: {
-            'criteria[0][field]': 1, // name
-            'criteria[0][searchtype]': 'equals',
-            'criteria[0][value]': target,
-            'range': '0-4',
-            'forcedisplay[0]': 2
-          }
-        });
-        const rows = (res.data?.data ?? []) as Array<Record<string, unknown>>;
-        if (rows.length > 0) {
-          const userId = Number(rows[0]['2'] ?? rows[0].id);
-          if (Number.isFinite(userId) && userId > 0) {
-            return { id: userId, name: target };
-          }
-        }
-      } catch {
-        /* nada achado */
-      }
-
       return null;
     });
   }
