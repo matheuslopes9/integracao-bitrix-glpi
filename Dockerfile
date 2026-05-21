@@ -13,7 +13,9 @@ RUN npm run build && npm prune --omit=dev
 FROM node:20-alpine AS runtime
 WORKDIR /app
 
-RUN apk add --no-cache sqlite-libs tini && addgroup -S app && adduser -S app -G app
+# tzdata é necessário para que o timezone (TZ env) seja aplicado nas APIs
+# de data/hora do Node (Date, toLocaleString) e nos logs.
+RUN apk add --no-cache sqlite-libs tini tzdata && addgroup -S app && adduser -S app -G app
 
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
@@ -24,6 +26,8 @@ USER app
 
 ENV NODE_ENV=production
 ENV PORT=3000
+# Horário de Brasília — afeta logs, Date, etc. (pode ser sobrescrito via env)
+ENV TZ=America/Sao_Paulo
 EXPOSE 3000
 
 VOLUME ["/app/data"]

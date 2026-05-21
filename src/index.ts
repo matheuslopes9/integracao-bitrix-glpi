@@ -59,9 +59,10 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 });
 
 const server = app.listen(config.PORT, () => {
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   logger.info(
-    { port: config.PORT, dryRun: config.DRY_RUN, env: config.NODE_ENV },
-    `🚀 Integrador GLPI <-> Bitrix24 online em :${config.PORT}`
+    { port: config.PORT, dryRun: config.DRY_RUN, env: config.NODE_ENV, tz },
+    `🚀 Integrador GLPI <-> Bitrix24 online em :${config.PORT} (tz=${tz})`
   );
   if (config.DRY_RUN) {
     logger.warn('⚠️  Modo DRY_RUN ativo — webhooks são processados mas nada será criado/alterado.');
