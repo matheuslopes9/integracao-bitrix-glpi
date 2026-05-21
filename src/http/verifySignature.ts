@@ -60,8 +60,20 @@ export function verifyGlpiSignature(req: Request, res: Response, next: NextFunct
     .digest('hex');
 
   if (!timingSafeEqualHex(expected, provided)) {
+    // [DEBUG TEMPORARIO] queremos ver o body que está vindo nas falhas para
+    // identificar se é um payload diferente do que esperamos (ex: followup que
+    // veio sem JSON renderizado correto, ou body de evento que mudou de schema).
+    const bodyPreview = rawBody.length > 500
+      ? rawBody.slice(0, 250) + ' ...[truncado]... ' + rawBody.slice(-250)
+      : rawBody;
     logger.warn(
-      { providedPreview: provided.slice(0, 12), expectedPreview: expected.slice(0, 12) },
+      {
+        providedPreview: provided.slice(0, 12),
+        expectedPreview: expected.slice(0, 12),
+        bodyLen: rawBody.length,
+        bodyPreview,
+        tsHeader
+      },
       'assinatura GLPI invalida'
     );
     res.status(401).json({ error: 'invalid signature' });
